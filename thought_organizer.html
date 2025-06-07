@@ -46,6 +46,11 @@
       background: #e9ecef;
       border-radius: 5px;
       position: relative;
+      border-left: 5px solid transparent;
+    }
+    .task-entry-completed {
+      background: #d4edda;
+      border-left: 5px solid #28a745;
     }
     .task-entry button.delete-btn {
       background: #dc3545;
@@ -87,6 +92,11 @@
   </div>
 
   <div class="bucket">
+    <h2>✅ Completed Tasks</h2>
+    <div id="completedTasks"></div>
+  </div>
+
+  <div class="bucket">
     <h2>💾 Restore Points</h2>
     <button id="saveBtn">🔖 Save to File</button>
     <input type="file" id="loadInput" accept=".json" />
@@ -96,7 +106,7 @@
   <script>
     const topLimit = 3;
     const midLimit = 10;
-    const tasks = { top: [], mid: [], low: [] };
+    const tasks = { top: [], mid: [], low: [], completed: [] };
     let editing = null; // { level, index }
 
     // Handle Enter key in thoughtInput to trigger handleInput
@@ -106,13 +116,11 @@
         handleInput();
       }
     });
-
     document.getElementById('enterBtn').addEventListener('click', handleInput);
 
     function handleInput() {
       const raw = document.getElementById('thoughtInput').value.trim();
       if (!raw) return alert('Please enter a thought.');
-      // Split by period, filter non-empty
       const sentences = raw.split('.').map(s => s.trim()).filter(s => s);
       if (sentences.length > 1) {
         processBatchSentences(sentences);
@@ -125,12 +133,13 @@
       sentences.forEach(sentence => {
         const parts = sentence.split(',').map(p => p.trim());
         const thought = parts[0] || '';
-        const step = parts[1] || '';
-        const why = parts[2] || '';
-        let priority = 'low';
+        const step    = parts[1] || '';
+        const why     = parts[2] || '';
+        let priority  = 'low';
         const prioNum = parseInt(parts[3]);
         if (prioNum === 1) priority = 'top';
         else if (prioNum === 2) priority = 'mid';
+
         let dueDate = '';
         const dueOffset = parts[4] || '';
         if (dueOffset) {
@@ -146,6 +155,7 @@
             dueDate = now.toISOString().slice(0, 10);
           }
         }
+
         addTaskAuto(thought, step, why, priority, dueDate);
       });
       renderTasks();
@@ -178,7 +188,11 @@
       const prioritySelect = document.createElement('select'); prioritySelect.id = 'prioritySelect';
       ['top','mid','low'].forEach(val => {
         const opt = document.createElement('option'); opt.value = val;
-        opt.textContent = val==='top'?'Top Priority':val==='mid'?'Medium Priority':'Low Priority';
+        opt.textContent = val === 'top'
+          ? 'Top Priority'
+          : val === 'mid'
+          ? 'Medium Priority'
+          : 'Low Priority';
         prioritySelect.appendChild(opt);
       }); entryDiv.appendChild(prioritySelect);
       prioritySelect.addEventListener('keydown', e => {
@@ -199,10 +213,14 @@
           editing = null;
         }
         addTask(
-          text, firstStepInput.value.trim(), whyInput.value.trim(),
-          prioritySelect.value, dueDateInput.value
+          text,
+          firstStepInput.value.trim(),
+          whyInput.value.trim(),
+          prioritySelect.value,
+          dueDateInput.value
         );
-      }); entryDiv.appendChild(addBtn);
+      });
+      entryDiv.appendChild(addBtn);
 
       const cancelBtn = document.createElement('button'); cancelBtn.textContent = 'Cancel';
       cancelBtn.addEventListener('click', () => {
@@ -272,6 +290,34 @@
         tasks[level].forEach((t, i) => {
           const taskEl = document.createElement('div');
           taskEl.className = 'task-entry';
+
+          // Determine color based on due date spectrum (green→red)
+          if (t.due) {
+            const today = new Date().toISOString().slice(0,10);
+            const dtToday = new Date(today);
+            const dtDue = new Date(t.due);
+            const diffMs = dtDue - dtToday;
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            let color = 'rgb(0,255,0)'; // default green for far future
+            if (diffDays < 0) {
+              color = '#ff0000'; // red for past due
+            } else if (diffDays === 0) {
+              color = '#ff8000'; // orange for due today
+            } else if (diffDays === 1) {
+              color = '#ffff00'; // yellow for tomorrow
+            } else {
+              // For diffDays >= 2, interpolate between yellow and green
+              // cap at 30 days: diffDays=2 → p=0, diffDays=30 → p=1
+              const capped = Math.min(diffDays, 30);
+              const p = (capped - 2) / 28;
+              const r = Math.round(255 * (1 - p));
+              const g = 255;
+              const b = 0;
+              color = `rgb(${r},${g},${b})`;
+            }
+            taskEl.style.borderLeftColor = color;
+          }
+
           taskEl.innerHTML = `
             <p><strong>${t.text}</strong></p>
             <p>🪜 First Step: ${t.step.replace(/\n/g,'<br>')}</p>
@@ -292,6 +338,11 @@
           editBtn.className = 'edit-btn';
           editBtn.addEventListener('click', () => editTask(level, i));
 
+          const completeBtn = document.createElement('button');
+          completeBtn.textContent = '✅';
+          completeBtn.title = 'Mark Completed';
+          completeBtn.addEventListener('click', () => completeTask(level, i));
+
           const deleteBtn = document.createElement('button');
           deleteBtn.textContent = '🗑️';
           deleteBtn.className = 'delete-btn';
@@ -300,14 +351,38 @@
           taskEl.appendChild(upBtn);
           taskEl.appendChild(downBtn);
           taskEl.appendChild(editBtn);
+          taskEl.appendChild(completeBtn);
           taskEl.appendChild(deleteBtn);
           container.appendChild(taskEl);
         });
       });
+
+      // Render completed tasks
+      const compContainer = document.getElementById('completedTasks');
+      compContainer.innerHTML = '';
+      tasks.completed.forEach((entry, ci) => {
+        const { level: origLevel, task: t } = entry;
+        const taskEl = document.createElement('div');
+        taskEl.className = 'task-entry-completed';
+        taskEl.innerHTML = `
+          <p><strong>${t.text}</strong></p>
+          <p>🪜 First Step: ${t.step.replace(/\n/g,'<br>')}</p>
+          <p>🎯 Why: ${t.why.replace(/\n/g,'<br>')}</p>
+          <p>📅 Due: ${t.due || 'No date set'}</p>
+        `;
+
+        const revertBtn = document.createElement('button');
+        revertBtn.textContent = '↩️';
+        revertBtn.title = 'Revert to Incomplete';
+        revertBtn.addEventListener('click', () => revertTask(ci));
+
+        taskEl.appendChild(revertBtn);
+        compContainer.appendChild(taskEl);
+      });
     }
 
     function promoteTask(level, index) {
-      if (level === 'top') return;
+      if (level === 'top') return; // already at top
       const task = tasks[level].splice(index, 1)[0];
       if (level === 'mid') {
         if (tasks.top.length < topLimit) {
@@ -345,6 +420,19 @@
       renderTasks();
     }
 
+    function completeTask(level, index) {
+      const task = tasks[level].splice(index, 1)[0];
+      tasks.completed.push({ level, task });
+      renderTasks();
+    }
+
+    function revertTask(compIndex) {
+      const entry = tasks.completed.splice(compIndex, 1)[0];
+      const { level: origLevel, task } = entry;
+      tasks[origLevel].push(task);
+      renderTasks();
+    }
+
     function editTask(level, index) {
       const t = tasks[level][index];
       editing = { level, index };
@@ -354,15 +442,19 @@
       container.innerHTML = '';
       const entryDiv = document.createElement('div'); entryDiv.className = 'task-entry';
       const thoughtP = document.createElement('p'); thoughtP.innerHTML = `<strong>Editing Thought:</strong> ${t.text.replace(/\n/g,'<br>')}`; entryDiv.appendChild(thoughtP);
+
       const firstStepInput = document.createElement('textarea'); firstStepInput.id='firstStep'; firstStepInput.rows=2; firstStepInput.value=t.step; entryDiv.appendChild(firstStepInput);
       firstStepInput.addEventListener('keydown', e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault(); whyInput.focus();}});
       const whyInput=document.createElement('textarea'); whyInput.id='whyMatters'; whyInput.rows=2; whyInput.value=t.why; entryDiv.appendChild(whyInput);
       whyInput.addEventListener('keydown', e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault(); prioritySelect.focus();}});
+
       const prioritySelect=document.createElement('select'); prioritySelect.id='prioritySelect'; ['top','mid','low'].forEach(val=>{const opt=document.createElement('option'); opt.value=val; opt.textContent=val==='top'? 'Top Priority': val==='mid'? 'Medium Priority': 'Low Priority'; if(val===level) opt.selected=true; prioritySelect.appendChild(opt);}); entryDiv.appendChild(prioritySelect);
       prioritySelect.addEventListener('keydown', e=>{if(e.key==='Enter'){e.preventDefault(); dueDateInput.focus();}});
+
       const dueDateInput=document.createElement('input'); dueDateInput.id='dueDate'; dueDateInput.type='date'; dueDateInput.value=t.due; entryDiv.appendChild(dueDateInput);
-      dueDateInput.addEventListener('keydown', e=>{if(e.key==='Enter'){e.preventDefault(); addBtn.click();}});
-      const addBtn=document.createElement('button'); addBtn.textContent='Update Task'; addBtn.addEventListener('click',()=>{const {level,index}=editing; tasks[level].splice(index,1); editing=null; addTask(t.text, firstStepInput.value.trim(), whyInput.value.trim(), prioritySelect.value, dueDateInput.value);}); entryDiv.appendChild(addBtn);
+      dueDateInput.addEventListener('keydown', e=>{if(e.key==='Enter'){e.preventDefault(); updateBtn.click();}});
+
+      const updateBtn=document.createElement('button'); updateBtn.textContent='Update Task'; updateBtn.addEventListener('click',()=>{const {level,index}=editing; tasks[level].splice(index,1); editing=null; addTask(t.text, firstStepInput.value.trim(), whyInput.value.trim(), prioritySelect.value, dueDateInput.value);} ); entryDiv.appendChild(updateBtn);
       const cancelBtn=document.createElement('button'); cancelBtn.textContent='Cancel'; cancelBtn.addEventListener('click',()=>{editing=null; document.getElementById('promptFlow').innerHTML='';}); entryDiv.appendChild(cancelBtn);
       container.appendChild(entryDiv); firstStepInput.focus();
     }
@@ -381,9 +473,40 @@
       link.click();
     }
 
-    function loadSnapshot(input) { const file = input.files[0]; const reader = new FileReader(); reader.onload = function() { try { const data = JSON.parse(reader.result); if(data.top && data.mid && data.low) { tasks.top = data.top; tasks.mid = data.mid; tasks.low = data.low; renderTasks(); alert('Restore successful.'); } else throw new Error('Invalid structure'); } catch(e) { alert('Failed to load snapshot: ' + e.message); } }; reader.readAsText(file); }
+    function loadSnapshot(input) {
+      const file = input.files[0]; const reader = new FileReader();
+      reader.onload = function() {
+        try {
+          const data = JSON.parse(reader.result);
+          if (data.top && data.mid && data.low && data.completed) {
+            tasks.top = data.top;
+            tasks.mid = data.mid;
+            tasks.low = data.low;
+            tasks.completed = data.completed;
+            renderTasks();
+            alert('Restore successful.');
+          } else {
+            throw new Error('Invalid structure');
+          }
+        } catch (e) {
+          alert('Failed to load snapshot: ' + e.message);
+        }
+      };
+      reader.readAsText(file);
+    }
 
-    function clearAll() { if(confirm('Are you sure you want to clear everything?')) { tasks.top = []; tasks.mid = []; tasks.low = []; renderTasks(); }}
+    function clearAll() {
+      if (confirm('Are you sure you want to clear everything?')) {
+        tasks.top = [];
+        tasks.mid = [];
+        tasks.low = [];
+        tasks.completed = [];
+        renderTasks();
+      }
+    }
+
+    // Initial render
+    renderTasks();
   </script>
 </body>
 </html>
